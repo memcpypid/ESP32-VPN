@@ -1,0 +1,24 @@
+# Repository allowlist: publish only the reusable Arduino library.
+/*
+
+# Repository metadata
+!/.gitignore
+!/README.md
+!/library.properties
+!/keywords.txt
+!/LICENSE
+!/LICENSE.*
+!/CHANGELOG.md
+
+# Library source and public examples
+!/src/
+!/src/**
+!/examples/
+!/examples/**
+
+# Protocol documentation and tests
+!/docs/
+!/docs/**
+!/tests/
+!/tests/**
+
