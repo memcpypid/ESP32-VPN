@@ -6,10 +6,6 @@ mendukung LCP, PAP, MS-CHAPv2, IPCP, alamat IPv4, DNS, pengiriman paket IPv4, da
 paket IPv4 masuk. `ESP32VPNWorker` dapat menjalankan pemrosesan VPN dan adaptor
 di task FreeRTOS terpisah agar aplikasi sinkron tidak menghentikan tunnel.
 
-> Semua alamat server, username, password, IP, dan domain dalam dokumentasi
-> menggunakan nilai contoh. Jangan menulis kredensial atau endpoint produksi
-> langsung ke sketch, README, log yang dikomit, maupun folder `examples`.
-
 ## Kompatibilitas board
 
 Library ini dikembangkan dan diuji dengan:
@@ -29,19 +25,8 @@ Detail wire format, state machine, dan referensi RFC tersedia di
 1. Pindahkan folder ini ke `Arduino/libraries/ESP32VPN`, atau buka sketch utama
    langsung dari folder proyek.
 2. Pilih board ESP32 pada Arduino IDE.
-3. Buka salah satu sketch di folder `examples`, lalu ganti nilai placeholder
-   Wi-Fi dan VPN pada salinan lokal Anda.
-
-Jika proyek aplikasi menggunakan `secrets.h`, simpan file tersebut hanya secara
-lokal dan pastikan tetap diabaikan Git. Jangan menambahkan pengecualian
-`!secrets.h` ke `.gitignore`.
-
-Sebelum push, audit kembali file yang dilacak:
-
-```bash
-git grep -n -E 'nama-domain-asli|alamat-ip-asli|username-asli'
-git status --short
-```
+3. Buka salah satu sketch di folder `examples`, lalu isi konfigurasi Wi-Fi dan
+   akun VPN milik perangkat Anda.
 
 ## Mengaktifkan dan menonaktifkan debug
 

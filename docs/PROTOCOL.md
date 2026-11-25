@@ -76,10 +76,3 @@ retry bila adaptor belum dapat dibuat. Aplikasi utama cukup memeriksa
 Antrean keluar adaptor menampung burst sampai 32 paket dan mengirim maksimal 16
 paket per iterasi. Batas ini mengurangi packet drop TCP tanpa membuat worker
 busy-loop atau menghambat task Wi-Fi/lwIP.
-
-## Privasi konfigurasi
-
-Dokumentasi dan contoh tidak boleh menyimpan endpoint VPN produksi, IP publik,
-alamat IPCP nyata, username, password, maupun Wi-Fi credential. Gunakan nilai
-reservasi dokumentasi seperti `vpn.example.com`, `192.0.2.1`, atau nama generik.
-Simpan konfigurasi perangkat lokal di `secrets.h` yang diabaikan Git.
