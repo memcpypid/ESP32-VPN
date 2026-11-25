@@ -59,3 +59,27 @@ socket TCP/UDP Arduino dapat memakai alamat IPv4 hasil IPCP.
 Untuk diagnosis interoperabilitas, capture jaringan merupakan sumber kebenaran.
 Log `TX HEX` menunjukkan buffer sebelum `sendto`, bukan bukti bahwa paket tiba
 dan diterima LNS.
+
+## Model eksekusi
+
+`ESP32VPN::loop()` menangani state machine L2TP/PPP dan penerimaan UDP.
+`ESP32VPNNetif::loop()` menguras antrean paket keluar dari task TCP/IP lwIP.
+Keduanya harus dipanggil sering dan tidak boleh dijalankan bersamaan dari
+beberapa task.
+
+`ESP32VPNWorker` menyediakan model yang direkomendasikan untuk aplikasi yang
+memakai server HTTP sinkron. Worker menjadi satu-satunya pemilik kedua fungsi
+loop tersebut, menunggu tunnel Connected, mengaktifkan adaptor, lalu melakukan
+retry bila adaptor belum dapat dibuat. Aplikasi utama cukup memeriksa
+`worker.ready()` dan menangani sensor atau web server.
+
+Antrean keluar adaptor menampung burst sampai 32 paket dan mengirim maksimal 16
+paket per iterasi. Batas ini mengurangi packet drop TCP tanpa membuat worker
+busy-loop atau menghambat task Wi-Fi/lwIP.
+
+## Privasi konfigurasi
+
+Dokumentasi dan contoh tidak boleh menyimpan endpoint VPN produksi, IP publik,
+alamat IPCP nyata, username, password, maupun Wi-Fi credential. Gunakan nilai
+reservasi dokumentasi seperti `vpn.example.com`, `192.0.2.1`, atau nama generik.
+Simpan konfigurasi perangkat lokal di `secrets.h` yang diabaikan Git.

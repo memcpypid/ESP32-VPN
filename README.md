@@ -3,7 +3,12 @@
 Library L2TP untuk ESP32 Arduino yang membangun tunnel L2TP/UDP, kemudian
 menjalankan PPP di dalam tunnel. Implementasi saat ini
 mendukung LCP, PAP, MS-CHAPv2, IPCP, alamat IPv4, DNS, pengiriman paket IPv4, dan callback
-paket IPv4 masuk. Semua pemrosesan dibuat non-blocking setelah koneksi awal.
+paket IPv4 masuk. `ESP32VPNWorker` dapat menjalankan pemrosesan VPN dan adaptor
+di task FreeRTOS terpisah agar aplikasi sinkron tidak menghentikan tunnel.
+
+> Semua alamat server, username, password, IP, dan domain dalam dokumentasi
+> menggunakan nilai contoh. Jangan menulis kredensial atau endpoint produksi
+> langsung ke sketch, README, log yang dikomit, maupun folder `examples`.
 
 ## Kompatibilitas board
 
@@ -24,11 +29,19 @@ Detail wire format, state machine, dan referensi RFC tersedia di
 1. Pindahkan folder ini ke `Arduino/libraries/ESP32VPN`, atau buka sketch utama
    langsung dari folder proyek.
 2. Pilih board ESP32 pada Arduino IDE.
-3. Salin `secrets.h.example` menjadi `secrets.h`, lalu isi Wi-Fi dan akun VPN.
+3. Buka salah satu sketch di folder `examples`, lalu ganti nilai placeholder
+   Wi-Fi dan VPN pada salinan lokal Anda.
 
-Untuk sketch utama, salin `secrets.h.example` menjadi `secrets.h`, lalu isi
-credential lokal. `secrets.h` sudah masuk `.gitignore` dan tidak akan ikut
-terunggah ke GitHub.
+Jika proyek aplikasi menggunakan `secrets.h`, simpan file tersebut hanya secara
+lokal dan pastikan tetap diabaikan Git. Jangan menambahkan pengecualian
+`!secrets.h` ke `.gitignore`.
+
+Sebelum push, audit kembali file yang dilacak:
+
+```bash
+git grep -n -E 'nama-domain-asli|alamat-ip-asli|username-asli'
+git status --short
+```
 
 ## Mengaktifkan dan menonaktifkan debug
 
@@ -77,7 +90,7 @@ config.reconnectDelayMs = 3000;
 ## Examples
 
 - `L2TPBasic`: koneksi L2TP/PPP dan menampilkan IP hasil IPCP.
-- `L2TPWebServer`: adaptor lwIP dan HTTP server port `8291` melalui VPN.
+- `L2TPWebServer`: worker FreeRTOS, adaptor lwIP, dan HTTP server melalui VPN.
 
 ## API singkat
 
@@ -89,37 +102,19 @@ c.password = "secret";
 c.localPort = 1701; // source port UDP L2TP; gunakan 0 jika 1701 sudah dipakai
 c.debug = true;
 
-esp32vpn::ESP32VPN vpn;
-esp32vpn::ESP32VPNNetif adapter;
-vpn.onIPv4(onPacket);
-vpn.begin(c);
-
-void loop() {
-  vpn.loop();
-  adapter.loop();
-}
-```
-
-`sendIPv4()` menerima satu paket IPv4 lengkap. `onIPv4()` menerima paket dari
-tunnel. Untuk memakai socket Arduino biasa, aktifkan adaptor lwIP setelah VPN
-tersambung:
-
-```cpp
 #include <ESP32VPNNetif.h>
 #include <ESP32VPNWorker.h>
 
-if (vpn.connected()) adapter.begin(vpn, true); // VPN menjadi default route
-```
-
-Untuk aplikasi sinkron seperti `WebServer`, gunakan worker bawaan agar respons
-HTTP tidak menghentikan L2TP/PPP:
-
-```cpp
+esp32vpn::ESP32VPN vpn;
+esp32vpn::ESP32VPNNetif adapter;
 esp32vpn::ESP32VPNWorker worker;
 
 void setup() {
-  // Hubungkan Wi-Fi, pasang config, lalu vpn.begin(c) terlebih dahulu.
-  worker.begin(vpn, adapter, true);
+  // Hubungkan Wi-Fi terlebih dahulu.
+  vpn.begin(c);
+  if (!worker.begin(vpn, adapter, true)) {
+    Serial.println(worker.lastError());
+  }
 }
 
 void loop() {
@@ -128,19 +123,27 @@ void loop() {
 }
 ```
 
-Worker menjadi satu-satunya pemilik proses periodik VPN, menunggu tunnel
-tersambung, mengaktifkan adaptor, dan mencoba ulang adaptor bila diperlukan.
-Core, stack, prioritas, interval task, dan retry dapat diatur melalui
-`WorkerConfig`. Contoh lengkap ada di `examples/L2TPWebServer`.
+`worker.begin()` membuat task FreeRTOS, menjalankan `vpn.loop()`, menunggu PPP
+Connected, mengaktifkan adaptor lwIP, menguras antrean paket, dan mencoba ulang
+adaptor bila diperlukan. Jangan memanggil `vpn.loop()` atau `adapter.loop()`
+sendiri selama worker aktif. Gunakan mode loop manual hanya jika aplikasi tidak
+memakai worker.
 
-Adaptor menyediakan antrean burst 32 paket dan memproses maksimal 16 paket per
-putaran. Ini mengurangi packet drop saat TCP mengirim burst tanpa membuat task
-VPN melakukan busy-loop atau menghambat task Wi-Fi/lwIP.
+Konfigurasi task bersifat opsional:
 
-Sketch contoh menjalankan HTTP server pada port `8291`. Agar bisa diakses dari
-internet melalui `rmtsg3.perwiramedia.com:8228`, router/server VPN harus memiliki
-DNAT/port-forward TCP menuju alamat IPCP ESP32, misalnya
-`10.18.0.228:8291`. Port publik tidak dapat dibuka oleh library ESP32 sendiri.
+```cpp
+esp32vpn::WorkerConfig wc;
+wc.stackSize = 8192;
+wc.priority = 2;
+wc.core = 0;
+wc.idleTicks = 1;
+wc.adapterRetryMs = 1000;
+worker.begin(vpn, adapter, true, wc);
+```
+
+`sendIPv4()` menerima satu paket IPv4 lengkap. `onIPv4()` menerima paket dari
+tunnel. `ESP32VPNNetif` memasukkan paket tersebut ke stack lwIP sehingga socket
+TCP/UDP Arduino dapat menggunakan alamat hasil IPCP.
 
 ## Batasan penting
 
@@ -150,6 +153,8 @@ DNAT/port-forward TCP menuju alamat IPCP ESP32, misalnya
 - `ESP32VPNNetif` saat ini ditargetkan dan diuji-kompilasi untuk Arduino-ESP32
   2.0.x. Adaptor memasang VPN sebagai default route; socket UDP L2TP dikunci ke
   antarmuka Wi-Fi untuk mencegah loop routing.
+- `ESP32VPNWorker` memiliki satu task sebagai pemilik pemrosesan periodik VPN
+  dan netif. Jangan menjalankan loop manual secara bersamaan dengan worker.
 - IPv6, MPPE, CHAP-MD5, EAP, fragment reassembly, dan persistensi
   sesi belum diimplementasikan.
 
@@ -174,4 +179,3 @@ Beberapa petunjuk diagnosis:
 - `PAP Authenticate-Nak` atau `MS-CHAPv2 ditolak`: username, password, domain, atau kebijakan autentikasi
   server menolak login.
 - IPCP selesai berarti sesi VPN dan alamat IPv4 tunnel sudah berhasil dibentuk.
-
