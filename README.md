@@ -1,7 +1,7 @@
-# ESP32VPN (L2TP + SSTP)
+# ESP32VPN L2TP
 
-Library eksperimental untuk ESP32 Arduino yang membangun tunnel L2TP/UDP atau
-SSTP/TLS, kemudian menjalankan PPP di dalam tunnel. Implementasi saat ini
+Library L2TP untuk ESP32 Arduino yang membangun tunnel L2TP/UDP, kemudian
+menjalankan PPP di dalam tunnel. Implementasi saat ini
 mendukung LCP, PAP, MS-CHAPv2, IPCP, alamat IPv4, DNS, pengiriman paket IPv4, dan callback
 paket IPv4 masuk. Semua pemrosesan dibuat non-blocking setelah koneksi awal.
 
@@ -25,8 +25,6 @@ Detail wire format, state machine, dan referensi RFC tersedia di
    langsung dari folder proyek.
 2. Pilih board ESP32 pada Arduino IDE.
 3. Salin `secrets.h.example` menjadi `secrets.h`, lalu isi Wi-Fi dan akun VPN.
-4. Untuk SSTP, isi `caCertificate` dengan root CA server. Jangan memakai
-   `insecureTls` pada perangkat produksi.
 
 Untuk sketch utama, salin `secrets.h.example` menjadi `secrets.h`, lalu isi
 credential lokal. `secrets.h` sudah masuk `.gitignore` dan tidak akan ikut
@@ -85,7 +83,6 @@ config.reconnectDelayMs = 3000;
 
 ```cpp
 esp32vpn::Config c;
-c.protocol = esp32vpn::Protocol::L2TP; // atau SSTP
 c.server = "vpn.example.com";
 c.username = "user";
 c.password = "secret";
@@ -109,9 +106,36 @@ tersambung:
 
 ```cpp
 #include <ESP32VPNNetif.h>
+#include <ESP32VPNWorker.h>
 
 if (vpn.connected()) adapter.begin(vpn, true); // VPN menjadi default route
 ```
+
+Untuk aplikasi sinkron seperti `WebServer`, gunakan worker bawaan agar respons
+HTTP tidak menghentikan L2TP/PPP:
+
+```cpp
+esp32vpn::ESP32VPNWorker worker;
+
+void setup() {
+  // Hubungkan Wi-Fi, pasang config, lalu vpn.begin(c) terlebih dahulu.
+  worker.begin(vpn, adapter, true);
+}
+
+void loop() {
+  // Tidak perlu lagi memanggil vpn.loop() atau adapter.loop().
+  if (worker.ready()) server.handleClient();
+}
+```
+
+Worker menjadi satu-satunya pemilik proses periodik VPN, menunggu tunnel
+tersambung, mengaktifkan adaptor, dan mencoba ulang adaptor bila diperlukan.
+Core, stack, prioritas, interval task, dan retry dapat diatur melalui
+`WorkerConfig`. Contoh lengkap ada di `examples/L2TPWebServer`.
+
+Adaptor menyediakan antrean burst 32 paket dan memproses maksimal 16 paket per
+putaran. Ini mengurangi packet drop saat TCP mengirim burst tanpa membuat task
+VPN melakukan busy-loop atau menghambat task Wi-Fi/lwIP.
 
 Sketch contoh menjalankan HTTP server pada port `8291`. Agar bisa diakses dari
 internet melalui `rmtsg3.perwiramedia.com:8228`, router/server VPN harus memiliki
@@ -123,21 +147,20 @@ DNAT/port-forward TCP menuju alamat IPCP ESP32, misalnya
 - Autentikasi PPP mendukung PAP dan MS-CHAPv2. Implementasi MS-CHAPv2
   memvalidasi authenticator response server sesuai RFC 2759.
 - L2TP ini adalah L2TP polos, bukan L2TP/IPsec. L2TP tidak mengenkripsi data.
-- SSTP memverifikasi TLS, tetapi crypto-binding MS-CHAPv2 belum tersedia.
 - `ESP32VPNNetif` saat ini ditargetkan dan diuji-kompilasi untuk Arduino-ESP32
   2.0.x. Adaptor memasang VPN sebagai default route; socket UDP L2TP dikunci ke
   antarmuka Wi-Fi untuk mencegah loop routing.
-- IPv6, MPPE, CHAP-MD5, EAP, fragment reassembly, reconnect/backoff, dan persistensi
+- IPv6, MPPE, CHAP-MD5, EAP, fragment reassembly, dan persistensi
   sesi belum diimplementasikan.
 
 Untuk penggunaan internet penuh yang aman, target lanjutan yang disarankan
-adalah MPPE, retransmisi L2TP, SSTP crypto-binding, dan pengujian
+adalah MPPE, retransmisi kontrol L2TP, dan pengujian
 interoperabilitas terhadap server yang digunakan.
 
 ## Membaca debug Serial
 
 Pasang callback `onLog()` sebelum `begin()` dan buka Serial Monitor pada 115200
-baud. Library menampilkan DNS, pembukaan UDP/TLS, semua pesan kontrol L2TP/SSTP,
+baud. Library menampilkan DNS, pembukaan UDP, semua pesan kontrol L2TP,
 LCP, PAP, MS-CHAPv2, IPCP, perubahan state, dan tahap yang mengalami timeout. Password tidak
 pernah dicetak.
 

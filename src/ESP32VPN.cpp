@@ -1,5 +1,6 @@
 #include "ESP32VPN.h"
 #include "MSChapV2.h"
+#include <WiFi.h>
 
 #include <algorithm>
 #include <cstdarg>
@@ -249,29 +250,18 @@ class ESP32VPN::Impl {
     localTunnel=uint16_t(esp_random()|1);localSession=uint16_t(esp_random()|1);
     ppp.configure(c.username,c.password,&Impl::pppSendThunk,this,rx,rxCtx,
                   c.debug?logger:nullptr,logCtx);
-    const uint16_t port=c.port?c.port:(c.protocol==Protocol::L2TP?1701:443);
-    logf("Target: protocol=%s server=%s port=%u user=%s timeout=%lu ms",
-         c.protocol==Protocol::L2TP?"L2TP":"SSTP",c.server,unsigned(port),c.username,static_cast<unsigned long>(c.timeoutMs));
+    const uint16_t port=c.port?c.port:1701;
+    logf("Target: protocol=L2TP server=%s port=%u user=%s timeout=%lu ms",
+         c.server,unsigned(port),c.username,static_cast<unsigned long>(c.timeoutMs));
     IPAddress resolved;
     log("DNS: mencari alamat server...");
     if (!WiFi.hostByName(c.server,resolved)) return fail("DNS server VPN gagal ditemukan");
     serverIP=resolved;
     serverPort=port;
     logf("DNS: %s -> %s",c.server,resolved.toString().c_str());
-    if (c.protocol == Protocol::L2TP) {
-      if (!openUdp(c.localPort)) return fail("gagal membuka/mengunci socket UDP L2TP ke Wi-Fi");
-      logf("L2TP: socket UDP lokal berhasil dibuka pada port %u",unsigned(c.localPort));
-      sendSccrq();
-    } else {
-      if (c.insecureTls) tls.setInsecure();
-      else if (c.caCertificate) tls.setCACert(c.caCertificate);
-      else return fail("SSTP memerlukan caCertificate atau insecureTls");
-      const uint16_t port = c.port ? c.port : 443;
-      logf("SSTP: membuka TLS ke %s:%u (%s)",c.server,unsigned(port),c.insecureTls?"tanpa verifikasi sertifikat":"verifikasi CA aktif");
-      if (!tls.connect(c.server,port)) return fail("koneksi TLS gagal");
-      log("SSTP: TLS tersambung");
-      sendSstpHttp();
-    }
+    if (!openUdp(c.localPort)) return fail("gagal membuka/mengunci socket UDP L2TP ke Wi-Fi");
+    logf("L2TP: socket UDP lokal berhasil dibuka pada port %u",unsigned(c.localPort));
+    sendSccrq();
     return true;
   }
   void loop() {
@@ -289,10 +279,8 @@ class ESP32VPN::Impl {
     }
     // Drain a short burst: TCP/HTTP commonly produces several consecutive
     // L2TP datagrams, and one packet per Arduino loop adds visible latency.
-    if (cfg.protocol==Protocol::L2TP) {
-      for(uint8_t i=0;i<8;i++) if(!pollL2tp()) break;
-    } else pollSstp();
-    if(state==State::Connected && cfg.protocol==Protocol::L2TP){
+    for(uint8_t i=0;i<8;i++) if(!pollL2tp()) break;
+    if(state==State::Connected){
       const uint32_t now=millis();
       if(cfg.keepaliveTimeoutMs && now-lastPeerActivity>=cfg.keepaliveTimeoutMs){
         fail("peer L2TP tidak merespons keepalive");return;
@@ -307,7 +295,7 @@ class ESP32VPN::Impl {
       logf("Alamat VPN: IP=%s DNS=%s",ppp.localIP().toString().c_str(),ppp.dnsIP().toString().c_str());
     }
   }
-  void stop() { closeUdp();tls.stop();state=State::Idle;pppStarted=false;httpDone=false;dataSequencing=false;dataNs=dataNr=0;peerTunnel=peerSession=0;ns=nr=0;serverPort=0;sstpBuf.clear(); }
+  void stop() { closeUdp();state=State::Idle;pppStarted=false;dataSequencing=false;dataNs=dataNr=0;peerTunnel=peerSession=0;ns=nr=0;serverPort=0; }
   bool fail(const char *s) { error=s; logf("ERROR: %s",s); state=State::Error;reconnectAt=millis()+cfg.reconnectDelayMs; return false; }
   void log(const char *s) { if (cfg.debug && logger) logger(s,logCtx); }
   void logf(const char *format,...) { char text[192];va_list args;va_start(args,format);vsnprintf(text,sizeof(text),format,args);va_end(args);log(text); }
@@ -322,18 +310,12 @@ class ESP32VPN::Impl {
     if(sent!=int(length)){logf("%s: sendto ke %s:%u gagal",kind,serverIP.toString().c_str(),unsigned(serverPort));return false;}return true;
   }
   bool sendPpp(const uint8_t *p,size_t n) {
-    if (cfg.protocol==Protocol::L2TP) {
-      if (!peerSession) { log("PPP TX gagal: session L2TP belum tersedia"); return false; }
-      // Mirror the LNS data header: no Length field unless sequencing is used.
-      std::vector<uint8_t>h{uint8_t(dataSequencing?0x08:0x00),0x02,uint8_t(peerTunnel>>8),uint8_t(peerTunnel),uint8_t(peerSession>>8),uint8_t(peerSession)};
-      if(dataSequencing){put16(h,dataNs++);put16(h,dataNr);}
-      if(cfg.packetDump)logf("L2TP DATA TX: tunnel=%u session=%u seq=%s Ns=%u Nr=%u PPP=%u byte",unsigned(peerTunnel),unsigned(peerSession),dataSequencing?"on":"off",unsigned(dataNs-(dataSequencing?1:0)),unsigned(dataNr),unsigned(n));
-      std::vector<uint8_t>datagram(h);datagram.insert(datagram.end(),p,p+n);if(cfg.packetDump)hex("L2TP DATA TX HEX",datagram.data(),datagram.size());
-      return sendUdp(datagram.data(),datagram.size(),"L2TP DATA TX");
-    }
-    if (!tls.connected()) { log("PPP TX gagal: TLS SSTP terputus"); return false; }
-    std::vector<uint8_t> f{0x10,0x00}; put16(f,uint16_t(n+4)); f.insert(f.end(),p,p+n);
-    return tls.write(f.data(),f.size())==f.size();
+    if (!peerSession) { log("PPP TX gagal: session L2TP belum tersedia"); return false; }
+    std::vector<uint8_t>h{uint8_t(dataSequencing?0x08:0x00),0x02,uint8_t(peerTunnel>>8),uint8_t(peerTunnel),uint8_t(peerSession>>8),uint8_t(peerSession)};
+    if(dataSequencing){put16(h,dataNs++);put16(h,dataNr);}
+    if(cfg.packetDump)logf("L2TP DATA TX: tunnel=%u session=%u seq=%s Ns=%u Nr=%u PPP=%u byte",unsigned(peerTunnel),unsigned(peerSession),dataSequencing?"on":"off",unsigned(dataNs-(dataSequencing?1:0)),unsigned(dataNr),unsigned(n));
+    std::vector<uint8_t>datagram(h);datagram.insert(datagram.end(),p,p+n);if(cfg.packetDump)hex("L2TP DATA TX HEX",datagram.data(),datagram.size());
+    return sendUdp(datagram.data(),datagram.size(),"L2TP DATA TX");
   }
 
   void avp(std::vector<uint8_t>&v,uint16_t type,const uint8_t *d,size_t n,bool mandatory=true) {
@@ -394,23 +376,12 @@ class ESP32VPN::Impl {
     }
     return true;
   }
-  void sendSstpHttp() {
-    String h=String("SSTP_DUPLEX_POST /sra_{BA195980-CD49-458b-9E23-C84EE0ADCD75}/ HTTP/1.1\r\nHost: ")+cfg.server+"\r\nContent-Length: 18446744073709551615\r\nSSTPCORRELATIONID: {00000000-0000-0000-0000-000000000000}\r\n\r\n";
-    tls.write((const uint8_t*)h.c_str(),h.length()); log("SSTP TX: HTTP SSTP_DUPLEX_POST");setState(State::Negotiating,"menunggu HTTP 200 dari server SSTP");
-  }
-  void pollSstp() {
-    while(tls.available())sstpBuf.push_back(tls.read());
-    if(!httpDone){auto it=std::search(sstpBuf.begin(),sstpBuf.end(),(const uint8_t*)"\r\n\r\n",(const uint8_t*)"\r\n\r\n"+4);if(it==sstpBuf.end())return;String status((const char*)sstpBuf.data(),std::min<size_t>(sstpBuf.size(),32));logf("SSTP RX: %s",status.c_str());if(status.indexOf("200")<0){fail("server SSTP menolak HTTP");return;}sstpBuf.erase(sstpBuf.begin(),it+4);httpDone=true;lastProgress=millis();sendSstpConnect();}
-    while(sstpBuf.size()>=4){uint16_t n=be16(sstpBuf.data()+2);if(n<4||n>8192){fail("frame SSTP tidak valid");return;}if(sstpBuf.size()<n)return;bool control=sstpBuf[1]&1;lastProgress=millis();if(control&&n>=8){uint16_t msg=be16(sstpBuf.data()+4);logf("SSTP RX: control message=%u length=%u",unsigned(msg),unsigned(n));if(msg==2){pppStarted=true;setState(State::Authenticating,"SSTP Call-Connect-Ack diterima");ppp.start();}}else if(!control)ppp.input(sstpBuf.data()+4,n-4);sstpBuf.erase(sstpBuf.begin(),sstpBuf.begin()+n);}
-  }
-  void sendSstpConnect(){uint8_t p[]={0x10,0x01,0x00,0x0e,0x00,0x01,0x00,0x01,0x00,0x06,0x00,0x01,0x00,0x01};tls.write(p,sizeof(p));log("SSTP TX: Call-Connect-Request");}
-
   Config cfg; State state=State::Idle; String error; uint32_t started=0,lastProgress=0;
   uint32_t lastPeerActivity=0,lastHelloSent=0,reconnectAt=0;
-  int udpSocket=-1; WiFiClientSecure tls; PPP ppp;IPAddress serverIP;uint16_t serverPort=0;bool pppStarted=false,httpDone=false;
+  int udpSocket=-1; PPP ppp;IPAddress serverIP;uint16_t serverPort=0;bool pppStarted=false;
   uint16_t localTunnel=0x1001,localSession=0x2001,peerTunnel=0,peerSession=0,ns=0,nr=0;
   bool dataSequencing=false;uint16_t dataNs=0,dataNr=0;
-  std::vector<uint8_t> sstpBuf; IPv4Handler rx=nullptr;void*rxCtx=nullptr;LogHandler logger=nullptr;void*logCtx=nullptr;
+  IPv4Handler rx=nullptr;void*rxCtx=nullptr;LogHandler logger=nullptr;void*logCtx=nullptr;
 };
 
 ESP32VPN::ESP32VPN():_impl(new Impl){}

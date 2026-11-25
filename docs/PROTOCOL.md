@@ -53,9 +53,8 @@ lokal. Implementasi diuji memakai contoh resmi RFC 2759 bagian 9.2.
 ## Keamanan dan batasan
 
 L2TP polos tidak memberikan enkripsi. Library ini belum mengimplementasikan
-IPsec atau MPPE. SSTP memberi TLS pada transport, tetapi crypto-binding SSTP
-belum lengkap. Adaptor default-route lwIP juga belum tersedia; API saat ini
-menyediakan pengiriman dan penerimaan paket IPv4 untuk adaptor terpisah.
+IPsec atau MPPE. `ESP32VPNNetif` menyediakan adaptor default-route lwIP agar
+socket TCP/UDP Arduino dapat memakai alamat IPv4 hasil IPCP.
 
 Untuk diagnosis interoperabilitas, capture jaringan merupakan sumber kebenaran.
 Log `TX HEX` menunjukkan buffer sebelum `sendto`, bukan bukti bahwa paket tiba

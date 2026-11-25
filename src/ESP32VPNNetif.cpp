@@ -13,6 +13,11 @@
 
 namespace esp32vpn {
 
+namespace {
+constexpr UBaseType_t kOutboundQueueLength = 32;
+constexpr uint8_t kMaxPacketsPerLoop = 16;
+}  // namespace
+
 class ESP32VPNNetif::Impl {
  public:
   struct PendingPacket {
@@ -135,7 +140,9 @@ class ESP32VPNNetif::Impl {
     }
 
     vpn = &v;
-    outbound = xQueueCreate(8, sizeof(PendingPacket *));
+    // TCP commonly emits ACK/data bursts. Eight slots were too easy to fill
+    // while an application was streaming a response through the VPN.
+    outbound = xQueueCreate(kOutboundQueueLength, sizeof(PendingPacket *));
     if (!outbound) {
       vpn = nullptr;
       error = "gagal membuat antrean paket VPN";
@@ -196,12 +203,15 @@ class ESP32VPNNetif::Impl {
       }
     }
     PendingPacket *pending = nullptr;
-    while (xQueueReceive(outbound, &pending, 0) == pdTRUE) {
+    uint8_t processed = 0;
+    while (processed < kMaxPacketsPerLoop &&
+           xQueueReceive(outbound, &pending, 0) == pdTRUE) {
       if (pending) {
         if (!vpn->sendIPv4(pending->bytes.data(), pending->bytes.size()) && debug)
           Serial.println("[VPN-NETIF] gagal mengirim paket antrean ke PPP");
         delete pending;
       }
+      ++processed;
     }
   }
 
@@ -227,7 +237,7 @@ class ESP32VPNNetif::Impl {
   ESP32VPN *vpn = nullptr;
   struct netif netif;
   struct netif *previousDefault = nullptr;
-  bool running = false;
+  volatile bool running = false;
   bool isDefault = false;
   bool debug = false;
   QueueHandle_t outbound = nullptr;

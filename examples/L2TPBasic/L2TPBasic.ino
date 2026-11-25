@@ -22,7 +22,6 @@ void setup() {
   while (WiFi.status() != WL_CONNECTED) delay(250);
 
   Config config;
-  config.protocol = Protocol::L2TP;
   config.server = VPN_SERVER;
   config.username = VPN_USERNAME;
   config.password = VPN_PASSWORD;
